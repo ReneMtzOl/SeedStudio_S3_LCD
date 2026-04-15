@@ -1,5 +1,5 @@
 #include <stdio.h>
-#include "pinout.h"
+#include "PinoutDefinitions.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "i2c_manager.h"
@@ -29,6 +29,12 @@ void app_main(void)
         printf("Restarting in %d seconds...\n", i);
         vTaskDelay(1000 / portTICK_PERIOD_MS);
     }
+    /*
+    for(int i = device_count - 1; i >= 0; i--) {
+        printf("Device[%d] = 0x%X...\n", i, registered_devices[i].addr);
+    }
+    */
+
     printf("Restarting now.\n");
     fflush(stdout);
     esp_restart();

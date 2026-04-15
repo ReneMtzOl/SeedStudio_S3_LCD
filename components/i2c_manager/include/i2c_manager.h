@@ -4,6 +4,8 @@
 #include <stdint.h>
 #include <esp_err.h>
 #include "driver/i2c_master.h"
+#include "PinoutDefinitions.h"
+
 
 // Estructura para dispositivo I2C
 typedef struct {
@@ -25,7 +27,8 @@ esp_err_t i2c_register_from_scan(void);
 esp_err_t i2c_register_device(uint8_t addr, const char* name);
 
 // Pines I2C definidos en pinout.h
-#define I2C_MASTER_SDA_IO 6
-#define I2C_MASTER_SCL_IO 5
+#define I2C_MASTER_SDA_IO TP_SDA
+#define I2C_MASTER_SCL_IO TP_SCL
+#define I2C_MASTER_FREQ_HZ 100000
 
 #endif // I2C_MANAGER_H
