@@ -143,3 +143,183 @@ static i2c_master_dev_handle_t get_dev_handle(uint8_t addr)
     return NULL;
 }
 
+esp_err_t i2c_unregister_device(uint8_t addr)
+{
+    if (bus_handle == NULL) {
+        ESP_LOGE(TAG, "Bus I2C no inicializado");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    int index = -1;
+    for (int i = 0; i < device_count; i++) {
+        if (registered_devices[i].address == addr) {
+            index = i;
+            break;
+        }
+    }
+
+    if (index == -1) {
+        ESP_LOGW(TAG, "Dispositivo 0x%02X no encontrado", addr);
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    // Remover del bus
+    esp_err_t ret = i2c_master_bus_rm_device(registered_devices[index].dev_handle);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Error removiendo dispositivo 0x%02X: %s", addr, esp_err_to_name(ret));
+        return ret;
+    }
+
+    // Desplazar el array
+    for (int i = index; i < device_count - 1; i++) {
+        registered_devices[i] = registered_devices[i + 1];
+    }
+    device_count--;
+
+    ESP_LOGI(TAG, "Dispositivo 0x%02X de-registrado", addr);
+    return ESP_OK;
+}
+
+esp_err_t i2c_unregister_all_devices(void)
+{
+    if (bus_handle == NULL) {
+        ESP_LOGE(TAG, "Bus I2C no inicializado");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    for (int i = 0; i < device_count; i++) {
+        esp_err_t ret = i2c_master_bus_rm_device(registered_devices[i].dev_handle);
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "Error removiendo dispositivo 0x%02X: %s", registered_devices[i].address, esp_err_to_name(ret));
+            // Continuar con los demás
+        }
+    }
+    device_count = 0;
+
+    ESP_LOGI(TAG, "Todos los dispositivos de-registrados");
+    return ESP_OK;
+}
+
+esp_err_t i2c_manager_deinit(void)
+{
+    if (bus_handle == NULL) {
+        ESP_LOGW(TAG, "Bus I2C ya de-inicializado");
+        return ESP_OK;
+    }
+
+    // De-registrar todos los dispositivos
+    esp_err_t ret = i2c_unregister_all_devices();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Error de-registrando dispositivos durante de-init");
+        // Continuar de todos modos
+    }
+
+    // Liberar el bus
+    ret = i2c_del_master_bus(bus_handle);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Error liberando bus I2C: %s", esp_err_to_name(ret));
+        return ret;
+    }
+
+    bus_handle = NULL;
+    ESP_LOGI(TAG, "Bus I2C de-inicializado correctamente");
+    return ESP_OK;
+}
+
+void i2c_print_registered_devices(void)
+{
+    if (device_count == 0) {
+        ESP_LOGI(TAG, "No hay dispositivos registrados");
+        return;
+    }
+
+    ESP_LOGI(TAG, "Dispositivos registrados (%d):", device_count);
+    for (int i = 0; i < device_count; i++) {
+        ESP_LOGI(TAG, "  [%d] %s (0x%02X)", i, registered_devices[i].name, registered_devices[i].address);
+    }
+}
+
+esp_err_t i2c_write(uint8_t addr, const uint8_t *data, size_t len)
+{
+    if (bus_handle == NULL) {
+        ESP_LOGE(TAG, "Bus I2C no inicializado");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if (data == NULL || len == 0) {
+        ESP_LOGE(TAG, "Datos inválidos para escritura");
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    i2c_master_dev_handle_t dev_handle = get_dev_handle(addr);
+    if (dev_handle == NULL) {
+        ESP_LOGE(TAG, "Dispositivo 0x%02X no encontrado", addr);
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    esp_err_t ret = i2c_master_transmit(dev_handle, data, len, 1000 / portTICK_PERIOD_MS);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Error escribiendo en 0x%02X: %s", addr, esp_err_to_name(ret));
+        return ret;
+    }
+
+    ESP_LOGD(TAG, "Escriba %d bytes en 0x%02X", len, addr);
+    return ESP_OK;
+}
+
+esp_err_t i2c_read(uint8_t addr, uint8_t *data, size_t len)
+{
+    if (bus_handle == NULL) {
+        ESP_LOGE(TAG, "Bus I2C no inicializado");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if (data == NULL || len == 0) {
+        ESP_LOGE(TAG, "Buffer inválido para lectura");
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    i2c_master_dev_handle_t dev_handle = get_dev_handle(addr);
+    if (dev_handle == NULL) {
+        ESP_LOGE(TAG, "Dispositivo 0x%02X no encontrado", addr);
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    esp_err_t ret = i2c_master_receive(dev_handle, data, len, 1000 / portTICK_PERIOD_MS);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Error leyendo de 0x%02X: %s", addr, esp_err_to_name(ret));
+        return ret;
+    }
+
+    ESP_LOGD(TAG, "Leídos %d bytes de 0x%02X", len, addr);
+    return ESP_OK;
+}
+
+esp_err_t i2c_write_read(uint8_t addr, const uint8_t *write_data, size_t write_len, uint8_t *read_data, size_t read_len)
+{
+    if (bus_handle == NULL) {
+        ESP_LOGE(TAG, "Bus I2C no inicializado");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if (write_data == NULL || write_len == 0 || read_data == NULL || read_len == 0) {
+        ESP_LOGE(TAG, "Parámetros inválidos para write-read");
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    i2c_master_dev_handle_t dev_handle = get_dev_handle(addr);
+    if (dev_handle == NULL) {
+        ESP_LOGE(TAG, "Dispositivo 0x%02X no encontrado", addr);
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    esp_err_t ret = i2c_master_transmit_receive(dev_handle, write_data, write_len, read_data, read_len, 1000 / portTICK_PERIOD_MS);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Error en write-read en 0x%02X: %s", addr, esp_err_to_name(ret));
+        return ret;
+    }
+
+    ESP_LOGD(TAG, "Write-read en 0x%02X: escriba %d bytes, leídos %d bytes", addr, write_len, read_len);
+    return ESP_OK;
+}
+

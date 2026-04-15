@@ -1,7 +1,7 @@
 #ifndef PINOUT_H
 #define PINOUT_H
 /*
-Seed StudioWT32-SC01 Plus 
+Seed Studio WT32-SC01 Plus 
 ESP32 development board With 3.5 Inch LCD IPS Display Touch Screen
 */
 
