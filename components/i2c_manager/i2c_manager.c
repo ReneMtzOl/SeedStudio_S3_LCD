@@ -323,3 +323,28 @@ esp_err_t i2c_write_read(uint8_t addr, const uint8_t *write_data, size_t write_l
     return ESP_OK;
 }
 
+esp_err_t i2c_set_device_name(uint8_t addr, const char* name)
+{
+    if (bus_handle == NULL) {
+        ESP_LOGE(TAG, "Bus I2C no inicializado");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if (name == NULL || strlen(name) == 0) {
+        ESP_LOGE(TAG, "Nombre inválido");
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    for (int i = 0; i < device_count; i++) {
+        if (registered_devices[i].address == addr) {
+            strncpy(registered_devices[i].name, name, sizeof(registered_devices[i].name) - 1);
+            registered_devices[i].name[sizeof(registered_devices[i].name) - 1] = '\0';
+            ESP_LOGI(TAG, "Nombre del dispositivo 0x%02X cambiado a: %s", addr, name);
+            return ESP_OK;
+        }
+    }
+
+    ESP_LOGW(TAG, "Dispositivo 0x%02X no encontrado para cambiar nombre", addr);
+    return ESP_ERR_NOT_FOUND;
+}
+

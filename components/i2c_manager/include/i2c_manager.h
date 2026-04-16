@@ -44,8 +44,8 @@ esp_err_t i2c_write(uint8_t addr, const uint8_t *data, size_t len);
 // Función para leer datos de un dispositivo I2C
 esp_err_t i2c_read(uint8_t addr, uint8_t *data, size_t len);
 
-// Función para escribir y luego leer datos (operación común)
-esp_err_t i2c_write_read(uint8_t addr, const uint8_t *write_data, size_t write_len, uint8_t *read_data, size_t read_len);
+// Función para cambiar el nombre de un dispositivo registrado
+esp_err_t i2c_set_device_name(uint8_t addr, const char* name);
 
 #define I2C_MASTER_SDA_IO TP_SDA
 #define I2C_MASTER_SCL_IO TP_SCL
