@@ -3,35 +3,40 @@
 #include "freertos/FreeRTOS.h" // IWYU pragma: keep
 #include "freertos/task.h"     // IWYU pragma: keep
 #include "i2c_manager.h"
+#include "lcd_touchpad.h"
 #include <stdio.h>
 
 
 void app_main(void) {
+  // Configure and apply reset sequence for touchpad
   gpio_set_direction(TP_RST, GPIO_MODE_OUTPUT);
-
-  printf("RST PIN = 1\n");
+  gpio_set_level(TP_RST, 0);
+  vTaskDelay(10 / portTICK_PERIOD_MS);
   gpio_set_level(TP_RST, 1);
+  vTaskDelay(100 / portTICK_PERIOD_MS);
 
-  // Inicializar el manager I2C con los pines de PinoutDefinitions.h
+  // Initialize the I2C manager with the pins from PinoutDefinitions.h
   i2c_manager_init(TP_SDA, TP_SCL);
 
-  i2c_scanner();
-  // Registrar dispositivos con velocidad estándar de 100kHz
-  i2c_register_from_scan(100000);
+  // Initialize the FT6336U driver
+  if (ft6336u_init() == ESP_OK) {
+      printf("Touchpad initialized successfully.\n");
+  } else {
+      printf("Failed to initialize Touchpad.\n");
+  }
 
-  vTaskDelay(300 / portTICK_PERIOD_MS);
-  i2c_print_registered_devices();
-  vTaskDelay(300 / portTICK_PERIOD_MS);
+  uint16_t x = 0, y = 0;
+  bool is_pressed = false;
 
-  // De-registrar dispositivos y de-inicializar bus I2C antes de reiniciar
-  i2c_unregister_all_devices();
-  i2c_manager_deinit();
+  printf("Waiting for touch screen interactions...\n");
 
-  vTaskDelay(300 / portTICK_PERIOD_MS);
-  i2c_print_registered_devices();
-  vTaskDelay(300 / portTICK_PERIOD_MS);
-
-  printf("Restarting now.\n");
-  fflush(stdout);
-  esp_restart();
+  while(1) {
+      if (ft6336u_read_pos(&x, &y, &is_pressed) == ESP_OK) {
+          if (is_pressed) {
+              printf("Touch Detected! X: %d, Y: %d\n", x, y);
+          }
+      }
+      // Read at 20Hz (every 50ms)
+      vTaskDelay(50 / portTICK_PERIOD_MS);
+  }
 }
