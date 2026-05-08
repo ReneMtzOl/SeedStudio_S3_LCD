@@ -4,7 +4,6 @@
 #include <stdint.h>
 #include <esp_err.h>
 #include "driver/i2c_master.h"
-#include "PinoutDefinitions.h"
 
 /**
  * @brief Structure to represent an I2C device.
@@ -18,11 +17,13 @@ typedef struct {
 /**
  * @brief Initialize the I2C master manager.
  *
+ * @param sda_pin GPIO pin to use for SDA.
+ * @param scl_pin GPIO pin to use for SCL.
  * @return
  *     - ESP_OK: Success
  *     - Others: Fail
  */
-esp_err_t i2c_manager_init(void);
+esp_err_t i2c_manager_init(int sda_pin, int scl_pin);
 
 /**
  * @brief Scan for I2C devices on the bus (prints the found addresses, does not register).
@@ -32,22 +33,24 @@ void i2c_scanner(void);
 /**
  * @brief Register I2C devices found on the bus automatically.
  *
+ * @param freq_hz Frequency in Hz to use for the found devices (e.g., 100000 for 100kHz).
  * @return
  *     - ESP_OK: Success
  *     - Others: Fail
  */
-esp_err_t i2c_register_from_scan(void);
+esp_err_t i2c_register_from_scan(uint32_t freq_hz);
 
 /**
  * @brief Register a specific I2C device manually.
  *
  * @param addr I2C address of the device.
  * @param name Custom name for the device.
+ * @param freq_hz Frequency in Hz to use for this specific device.
  * @return
  *     - ESP_OK: Success
  *     - Others: Fail
  */
-esp_err_t i2c_register_device(uint8_t addr, const char* name);
+esp_err_t i2c_register_device(uint8_t addr, const char* name, uint32_t freq_hz);
 
 /**
  * @brief Unregister a specific I2C device by its address.
@@ -132,9 +135,5 @@ esp_err_t i2c_write_read(uint8_t addr, const uint8_t *write_data, size_t write_l
  *     - Others: Fail
  */
 esp_err_t i2c_set_device_name(uint8_t addr, const char* name);
-
-#define I2C_MASTER_SDA_IO TP_SDA
-#define I2C_MASTER_SCL_IO TP_SCL
-#define I2C_MASTER_FREQ_HZ 100000
 
 #endif // I2C_MANAGER_H

@@ -1,12 +1,12 @@
 #include "i2c_manager.h"
 #include "driver/i2c_master.h"
 #include "esp_log.h"
-#include "freertos/FreeRTOS.h"
+#include "freertos/FreeRTOS.h" // IWYU pragma: keep
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 #include <stdio.h>
 #include <string.h>
 
-#define I2C_MASTER_FREQ_HZ 100000
 #define MAX_DEVICES 10
 
 static const char *TAG = "I2C_MANAGER";
@@ -14,27 +14,30 @@ static const char *TAG = "I2C_MANAGER";
 static i2c_master_bus_handle_t bus_handle = NULL;
 static i2c_device_t registered_devices[MAX_DEVICES];
 static int device_count = 0;
+static SemaphoreHandle_t i2c_manager_mutex = NULL;
 
-/**
- * @brief Initialize the I2C master manager.
- *
- * @return
- *     - ESP_OK: Success
- *     - Others: Fail
- */
-esp_err_t i2c_manager_init(void) {
+esp_err_t i2c_manager_init(int sda_pin, int scl_pin) {
   if (bus_handle != NULL) {
     ESP_LOGW(TAG, "I2C bus is already initialized");
     return ESP_OK;
   }
 
-  ESP_LOGI(TAG, "Initializing master I2C bus...");
+  if (i2c_manager_mutex == NULL) {
+    i2c_manager_mutex = xSemaphoreCreateMutex();
+    if (i2c_manager_mutex == NULL) {
+      ESP_LOGE(TAG, "Failed to create I2C manager mutex");
+      return ESP_ERR_NO_MEM;
+    }
+  }
+
+  ESP_LOGI(TAG, "Initializing master I2C bus on SDA=%d, SCL=%d...", sda_pin,
+           scl_pin);
 
   // Configure the master I2C bus
   i2c_master_bus_config_t bus_config = {
       .i2c_port = I2C_NUM_0,
-      .sda_io_num = I2C_MASTER_SDA_IO,
-      .scl_io_num = I2C_MASTER_SCL_IO,
+      .sda_io_num = sda_pin,
+      .scl_io_num = scl_pin,
       .clk_source = I2C_CLK_SRC_DEFAULT,
       .glitch_ignore_cnt = 7,
       .intr_priority = 0,
@@ -51,10 +54,6 @@ esp_err_t i2c_manager_init(void) {
   return ESP_OK;
 }
 
-/**
- * @brief Scan for I2C devices on the bus (prints the found addresses, does not
- * register).
- */
 void i2c_scanner(void) {
   if (bus_handle == NULL) {
     ESP_LOGE(TAG, "I2C bus not initialized. Call i2c_manager_init() first.");
@@ -76,14 +75,7 @@ void i2c_scanner(void) {
   printf("\nScan completed.\n");
 }
 
-/**
- * @brief Register I2C devices found on the bus automatically.
- *
- * @return
- *     - ESP_OK: Success
- *     - Others: Fail
- */
-esp_err_t i2c_register_from_scan(void) {
+esp_err_t i2c_register_from_scan(uint32_t freq_hz) {
   if (bus_handle == NULL) {
     ESP_LOGE(TAG, "I2C bus not initialized. Call i2c_manager_init() first.");
     return ESP_ERR_INVALID_STATE;
@@ -98,7 +90,7 @@ esp_err_t i2c_register_from_scan(void) {
     if (ret == ESP_OK) {
       char name[32];
       sprintf(name, "Device_0x%02X", addr);
-      ret = i2c_register_device(addr, name);
+      ret = i2c_register_device(addr, name, freq_hz);
       if (ret == ESP_OK) {
         registered++;
       }
@@ -108,23 +100,21 @@ esp_err_t i2c_register_from_scan(void) {
   return ESP_OK;
 }
 
-/**
- * @brief Register a specific I2C device manually.
- *
- * @param addr I2C address of the device.
- * @param name Custom name for the device.
- * @return
- *     - ESP_OK: Success
- *     - Others: Fail
- */
-esp_err_t i2c_register_device(uint8_t addr, const char *name) {
+esp_err_t i2c_register_device(uint8_t addr, const char *name,
+                              uint32_t freq_hz) {
   if (bus_handle == NULL) {
     return ESP_ERR_INVALID_STATE;
+  }
+
+  if (i2c_manager_mutex != NULL) {
+    xSemaphoreTake(i2c_manager_mutex, portMAX_DELAY);
   }
 
   if (device_count >= MAX_DEVICES) {
     ESP_LOGE(TAG, "Cannot register more devices. Maximum reached: %d",
              MAX_DEVICES);
+    if (i2c_manager_mutex != NULL)
+      xSemaphoreGive(i2c_manager_mutex);
     return ESP_ERR_NO_MEM;
   }
 
@@ -132,6 +122,8 @@ esp_err_t i2c_register_device(uint8_t addr, const char *name) {
   for (int i = 0; i < device_count; i++) {
     if (registered_devices[i].address == addr) {
       ESP_LOGW(TAG, "Device 0x%02X is already registered", addr);
+      if (i2c_manager_mutex != NULL)
+        xSemaphoreGive(i2c_manager_mutex);
       return ESP_OK;
     }
   }
@@ -139,7 +131,7 @@ esp_err_t i2c_register_device(uint8_t addr, const char *name) {
   // Configure the device
   i2c_device_config_t dev_config = {
       .device_address = addr,
-      .scl_speed_hz = I2C_MASTER_FREQ_HZ,
+      .scl_speed_hz = freq_hz,
   };
 
   i2c_master_dev_handle_t dev_handle;
@@ -147,6 +139,8 @@ esp_err_t i2c_register_device(uint8_t addr, const char *name) {
       i2c_master_bus_add_device(bus_handle, &dev_config, &dev_handle);
   if (ret != ESP_OK) {
     ESP_LOGE(TAG, "Error adding device 0x%02X: %s", addr, esp_err_to_name(ret));
+    if (i2c_manager_mutex != NULL)
+      xSemaphoreGive(i2c_manager_mutex);
     return ret;
   }
 
@@ -158,38 +152,45 @@ esp_err_t i2c_register_device(uint8_t addr, const char *name) {
       .name[sizeof(registered_devices[device_count].name) - 1] = '\0';
   device_count++;
 
-  ESP_LOGI(TAG, "Device registered: %s (0x%02X)", name, addr);
+  ESP_LOGI(TAG, "Device registered: %s (0x%02X) at %lu Hz", name, addr,
+           (unsigned long)freq_hz);
+
+  if (i2c_manager_mutex != NULL) {
+    xSemaphoreGive(i2c_manager_mutex);
+  }
+
   return ESP_OK;
 }
 
-/**
- * @brief Internal function to get the handle of a registered device.
- *
- * @param addr I2C address of the device.
- * @return i2c_master_dev_handle_t Handle of the device or NULL if not found.
- */
 static i2c_master_dev_handle_t get_dev_handle(uint8_t addr) {
+  i2c_master_dev_handle_t handle = NULL;
+
+  if (i2c_manager_mutex != NULL) {
+    xSemaphoreTake(i2c_manager_mutex, portMAX_DELAY);
+  }
+
   for (int i = 0; i < device_count; i++) {
     if (registered_devices[i].address == addr) {
-      return registered_devices[i].dev_handle;
+      handle = registered_devices[i].dev_handle;
+      break;
     }
   }
-  return NULL;
+
+  if (i2c_manager_mutex != NULL) {
+    xSemaphoreGive(i2c_manager_mutex);
+  }
+
+  return handle;
 }
 
-/**
- * @brief Unregister a specific I2C device by its address.
- *
- * @param addr I2C address of the device.
- * @return
- *     - ESP_OK: Success
- *     - ESP_ERR_NOT_FOUND: Device not found
- *     - Others: Fail
- */
 esp_err_t i2c_unregister_device(uint8_t addr) {
   if (bus_handle == NULL) {
     ESP_LOGE(TAG, "I2C bus not initialized");
     return ESP_ERR_INVALID_STATE;
+  }
+
+  if (i2c_manager_mutex != NULL) {
+    xSemaphoreTake(i2c_manager_mutex, portMAX_DELAY);
   }
 
   int index = -1;
@@ -202,6 +203,8 @@ esp_err_t i2c_unregister_device(uint8_t addr) {
 
   if (index == -1) {
     ESP_LOGW(TAG, "Device 0x%02X not found", addr);
+    if (i2c_manager_mutex != NULL)
+      xSemaphoreGive(i2c_manager_mutex);
     return ESP_ERR_NOT_FOUND;
   }
 
@@ -211,6 +214,8 @@ esp_err_t i2c_unregister_device(uint8_t addr) {
   if (ret != ESP_OK) {
     ESP_LOGE(TAG, "Error removing device 0x%02X: %s", addr,
              esp_err_to_name(ret));
+    if (i2c_manager_mutex != NULL)
+      xSemaphoreGive(i2c_manager_mutex);
     return ret;
   }
 
@@ -221,20 +226,22 @@ esp_err_t i2c_unregister_device(uint8_t addr) {
   device_count--;
 
   ESP_LOGI(TAG, "Device 0x%02X unregistered", addr);
+
+  if (i2c_manager_mutex != NULL) {
+    xSemaphoreGive(i2c_manager_mutex);
+  }
+
   return ESP_OK;
 }
 
-/**
- * @brief Unregister all currently registered I2C devices.
- *
- * @return
- *     - ESP_OK: Success
- *     - Others: Fail
- */
 esp_err_t i2c_unregister_all_devices(void) {
   if (bus_handle == NULL) {
     ESP_LOGE(TAG, "I2C bus not initialized");
     return ESP_ERR_INVALID_STATE;
+  }
+
+  if (i2c_manager_mutex != NULL) {
+    xSemaphoreTake(i2c_manager_mutex, portMAX_DELAY);
   }
 
   for (int i = 0; i < device_count; i++) {
@@ -248,16 +255,14 @@ esp_err_t i2c_unregister_all_devices(void) {
   device_count = 0;
 
   ESP_LOGI(TAG, "All devices unregistered");
+
+  if (i2c_manager_mutex != NULL) {
+    xSemaphoreGive(i2c_manager_mutex);
+  }
+
   return ESP_OK;
 }
 
-/**
- * @brief De-initialize the I2C master manager and free resources.
- *
- * @return
- *     - ESP_OK: Success
- *     - Others: Fail
- */
 esp_err_t i2c_manager_deinit(void) {
   if (bus_handle == NULL) {
     ESP_LOGW(TAG, "I2C bus already de-initialized");
@@ -279,16 +284,25 @@ esp_err_t i2c_manager_deinit(void) {
   }
 
   bus_handle = NULL;
+
+  if (i2c_manager_mutex != NULL) {
+    vSemaphoreDelete(i2c_manager_mutex);
+    i2c_manager_mutex = NULL;
+  }
+
   ESP_LOGI(TAG, "I2C bus successfully de-initialized");
   return ESP_OK;
 }
 
-/**
- * @brief Print the list of registered I2C devices (useful for debugging).
- */
 void i2c_print_registered_devices(void) {
+  if (i2c_manager_mutex != NULL) {
+    xSemaphoreTake(i2c_manager_mutex, portMAX_DELAY);
+  }
+
   if (device_count == 0) {
     ESP_LOGI(TAG, "No devices registered");
+    if (i2c_manager_mutex != NULL)
+      xSemaphoreGive(i2c_manager_mutex);
     return;
   }
 
@@ -297,18 +311,12 @@ void i2c_print_registered_devices(void) {
     ESP_LOGI(TAG, "  [%d] %s (0x%02X)", i, registered_devices[i].name,
              registered_devices[i].address);
   }
+
+  if (i2c_manager_mutex != NULL) {
+    xSemaphoreGive(i2c_manager_mutex);
+  }
 }
 
-/**
- * @brief Write data to an I2C device.
- *
- * @param addr I2C address of the device.
- * @param data Pointer to the data buffer to be written.
- * @param len Length of the data to write.
- * @return
- *     - ESP_OK: Success
- *     - Others: Fail
- */
 esp_err_t i2c_write(uint8_t addr, const uint8_t *data, size_t len) {
   if (bus_handle == NULL) {
     ESP_LOGE(TAG, "I2C bus not initialized");
@@ -337,16 +345,6 @@ esp_err_t i2c_write(uint8_t addr, const uint8_t *data, size_t len) {
   return ESP_OK;
 }
 
-/**
- * @brief Read data from an I2C device.
- *
- * @param addr I2C address of the device.
- * @param data Pointer to the buffer where received data will be stored.
- * @param len Length of the data to read.
- * @return
- *     - ESP_OK: Success
- *     - Others: Fail
- */
 esp_err_t i2c_read(uint8_t addr, uint8_t *data, size_t len) {
   if (bus_handle == NULL) {
     ESP_LOGE(TAG, "I2C bus not initialized");
@@ -375,19 +373,6 @@ esp_err_t i2c_read(uint8_t addr, uint8_t *data, size_t len) {
   return ESP_OK;
 }
 
-/**
- * @brief Write data to and then read data from an I2C device in a single
- * transaction.
- *
- * @param addr I2C address of the device.
- * @param write_data Pointer to the data buffer to be written.
- * @param write_len Length of the data to write.
- * @param read_data Pointer to the buffer where received data will be stored.
- * @param read_len Length of the data to read.
- * @return
- *     - ESP_OK: Success
- *     - Others: Fail
- */
 esp_err_t i2c_write_read(uint8_t addr, const uint8_t *write_data,
                          size_t write_len, uint8_t *read_data,
                          size_t read_len) {
@@ -422,16 +407,6 @@ esp_err_t i2c_write_read(uint8_t addr, const uint8_t *write_data,
   return ESP_OK;
 }
 
-/**
- * @brief Update the name of an already registered I2C device.
- *
- * @param addr I2C address of the device.
- * @param name New name for the device.
- * @return
- *     - ESP_OK: Success
- *     - ESP_ERR_NOT_FOUND: Device not found
- *     - Others: Fail
- */
 esp_err_t i2c_set_device_name(uint8_t addr, const char *name) {
   if (bus_handle == NULL) {
     ESP_LOGE(TAG, "I2C bus not initialized");
@@ -443,16 +418,28 @@ esp_err_t i2c_set_device_name(uint8_t addr, const char *name) {
     return ESP_ERR_INVALID_ARG;
   }
 
+  if (i2c_manager_mutex != NULL) {
+    xSemaphoreTake(i2c_manager_mutex, portMAX_DELAY);
+  }
+
   for (int i = 0; i < device_count; i++) {
     if (registered_devices[i].address == addr) {
       strncpy(registered_devices[i].name, name,
               sizeof(registered_devices[i].name) - 1);
       registered_devices[i].name[sizeof(registered_devices[i].name) - 1] = '\0';
       ESP_LOGI(TAG, "Name of device 0x%02X changed to: %s", addr, name);
+
+      if (i2c_manager_mutex != NULL)
+        xSemaphoreGive(i2c_manager_mutex);
       return ESP_OK;
     }
   }
 
   ESP_LOGW(TAG, "Device 0x%02X not found for renaming", addr);
+
+  if (i2c_manager_mutex != NULL) {
+    xSemaphoreGive(i2c_manager_mutex);
+  }
+
   return ESP_ERR_NOT_FOUND;
 }
